@@ -3,12 +3,12 @@ import { useState, useEffect } from 'react'
 import LoginModal from '@/components/LoginModal'
 
 export default function ProtectedRoute({ children }) {
-  const { user, loading } = useAuth()
+  const { user, loading, isFirebaseConfigured } = useAuth()
   const [showLogin, setShowLogin] = useState(false)
 
   useEffect(() => {
-    if (!loading && !user) setShowLogin(true)
-  }, [loading, user])
+    if (!loading && !user && isFirebaseConfigured) setShowLogin(true)
+  }, [loading, user, isFirebaseConfigured])
 
   if (loading) return (
     <div className="min-h-screen flex items-center justify-center">
@@ -19,7 +19,7 @@ export default function ProtectedRoute({ children }) {
     </div>
   )
 
-  if (!user) return (
+  if (!user && isFirebaseConfigured) return (
     <>
       <div className="min-h-screen flex items-center justify-center bg-[#f9fafb]">
         <div className="text-center px-4">

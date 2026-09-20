@@ -26,7 +26,7 @@ function getErrorMessage(error) {
 }
 
 export default function LoginModal({ open, onClose }) {
-  const { loginWithGoogle, sendOTP } = useAuth()
+  const { loginWithGoogle, sendOTP, isFirebaseConfigured } = useAuth()
   const [step, setStep] = useState('options')
   const [phone, setPhone] = useState('')
   const [otp, setOtp] = useState('')
@@ -46,6 +46,11 @@ export default function LoginModal({ open, onClose }) {
   const handleClose = () => { reset(); onClose() }
 
   const handleGoogle = async () => {
+    if (!isFirebaseConfigured) {
+      setError('Firebase is not configured. Add your VITE_FIREBASE_* values in the frontend .env file.')
+      return
+    }
+
     setLoading(true)
     setError('')
     try {
@@ -59,6 +64,11 @@ export default function LoginModal({ open, onClose }) {
   }
 
   const handleSendOTP = async () => {
+    if (!isFirebaseConfigured) {
+      setError('Firebase is not configured. Add your VITE_FIREBASE_* values in the frontend .env file.')
+      return
+    }
+
     setError('')
     const digits = phone.replace(/\D/g, '')
 
@@ -120,17 +130,22 @@ export default function LoginModal({ open, onClose }) {
         {/* Step 1 — choose method */}
         {step === 'options' && (
           <div className="flex flex-col gap-3 mt-2">
-            <Button onClick={handleGoogle} disabled={loading}
-              className="bg-[#2D6A4F] hover:bg-[#1B4332] text-white w-full">
-              {loading ? 'Signing in...' : 'Continue with Google'}
+            <Button onClick={handleGoogle} disabled={loading || !isFirebaseConfigured}
+              className="bg-[#2D6A4F] hover:bg-[#1B4332] text-white w-full disabled:opacity-60">
+              {loading ? 'Signing in...' : isFirebaseConfigured ? 'Continue with Google' : 'Firebase not configured'}
             </Button>
             <div className="flex items-center gap-2 text-xs text-gray-400">
               <div className="flex-1 h-px bg-gray-200" /> or <div className="flex-1 h-px bg-gray-200" />
             </div>
-            <Button variant="outline" onClick={() => { setError(''); setStep('phone') }}
-              className="w-full border-gray-300 text-gray-700">
+            <Button variant="outline" onClick={() => { setError(''); setStep('phone') }} disabled={!isFirebaseConfigured}
+              className="w-full border-gray-300 text-gray-700 disabled:opacity-60">
               Continue with Phone Number
             </Button>
+            {!isFirebaseConfigured && (
+              <p className="text-xs text-amber-600">
+                Add your Firebase keys to the frontend .env file to enable sign-in.
+              </p>
+            )}
             {error && <p className="text-red-500 text-sm">{error}</p>}
           </div>
         )}

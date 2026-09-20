@@ -137,7 +137,7 @@ router.post('/', async (req, res, next) => {
       : `Question: ${sanitizedQuery}\n\n${langInstruction}`
 
     const completion = await getGroq().chat.completions.create({
-      model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+      model: 'openai/gpt-oss-120b',
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
         { role: 'user', content: userMessage },

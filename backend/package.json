@@ -16,7 +16,7 @@
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "express-rate-limit": "^8.3.2",
-    "firebase-admin": "^12.2.0",
+    "firebase-admin": "^14.3.0",
     "groq-sdk": "^0.3.3",
     "helmet": "^8.1.0",
     "morgan": "^1.10.1",

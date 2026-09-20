@@ -60,7 +60,7 @@ router.post('/', upload.single('image'), async (req, res, next) => {
     }
 
     const completion = await getGroq().chat.completions.create({
-      model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+      model: process.env.GROQ_VISION_MODEL || 'qwen/qwen3.8-27b',
       messages: [{
         role: 'user',
         content: [

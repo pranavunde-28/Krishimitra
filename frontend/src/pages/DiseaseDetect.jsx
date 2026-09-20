@@ -202,12 +202,12 @@ export default function DiseaseDetect() {
       const parsed = { diseaseName, confidence, description, source: detectData.source }
       setResult(parsed)
 
-      // Step 2 — Groq enhancement
       setStatus('insights')
-      const { data: groqData } = await postGroq({
-        messages: [{
-          role: 'user',
-          content: `A farmer uploaded a crop image${cropType ? ` of ${cropType}` : ''}. The disease detection result is: "${diseaseName}". ${description ? `Description: ${description}` : ''}
+      try {
+        const { data: groqData } = await postGroq({
+          messages: [{
+            role: 'user',
+            content: `A farmer uploaded a crop image${cropType ? ` of ${cropType}` : ''}. The disease detection result is: "${diseaseName}". ${description ? `Description: ${description}` : ''}
           
 Generate a farmer-friendly report with these sections:
 1. What is this disease
@@ -218,9 +218,12 @@ Generate a farmer-friendly report with these sections:
 6. Prevention tips
 
 Keep it simple and practical for an Indian farmer.`,
-        }],
-      })
-      setGroqReport(groqData.text)
+          }],
+        })
+        setGroqReport(groqData.text || 'AI insights are currently unavailable. Please follow the visible symptoms and consult a local agriculture officer.')
+      } catch {
+        setGroqReport('AI insights are currently unavailable. The disease detection result is still valid. Please consult a local agriculture officer for treatment advice.')
+      }
       setStatus('done')
 
       // save to localStorage history
@@ -253,7 +256,7 @@ Keep it simple and practical for an Indian farmer.`,
       }
 
     } catch (e) {
-      setError('Detection failed. Please try again.')
+      setError(e.message || 'Detection failed. Please try again.')
       setStatus('')
       
       // Restore language even on error
@@ -276,7 +279,10 @@ Keep it simple and practical for an Indian farmer.`,
     setReporting(true)
     try {
       const { collection, addDoc, serverTimestamp } = await import('firebase/firestore')
-      const { db } = await import('@/lib/firebase')
+      const { db, isFirebaseConfigured } = await import('@/lib/firebase')
+      if (!isFirebaseConfigured || !db) {
+        throw new Error('Firebase is not configured. Reports cannot be submitted yet.')
+      }
       await addDoc(collection(db, 'diseaseReports'), {
         farmerUid: user?.uid || 'anonymous',
         farmerName: user?.displayName || 'Anonymous',
@@ -293,8 +299,8 @@ Keep it simple and practical for an Indian farmer.`,
         updatedAt: serverTimestamp(),
       })
       setReported(true)
-    } catch {
-      setError('Failed to submit report. Try again.')
+    } catch (submitError) {
+      setError(submitError.message || 'Failed to submit report. Try again.')
     } finally {
       setReporting(false)
     }

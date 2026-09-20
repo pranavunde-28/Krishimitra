@@ -49,34 +49,36 @@ export default function App() {
       <QueryClientProvider client={queryClient}>
         <AuthProvider>
           <BrowserRouter>
-            <Navbar onLoginClick={() => setLoginOpen(true)} />
-            <LoginModal open={loginOpen} onClose={() => setLoginOpen(false)} />
-            <main>
-              <Suspense fallback={<PageLoader />}>
-                <Routes>
-                  <Route path="/" element={<Home />} />
-                  <Route path="/prices" element={<P><Prices /></P>} />
-                  <Route path="/crop-advisor" element={<P><CropAdvisor /></P>} />
-                  <Route path="/disease-detect" element={<P><DiseaseDetect /></P>} />
-                  <Route path="/weather" element={<P><Weather /></P>} />
-                  <Route path="/alerts" element={<P><Alerts /></P>} />
-                  <Route path="/community" element={<P><Community /></P>} />
-                  <Route path="/schemes" element={<P><Schemes /></P>} />
-                  <Route path="/voice-assistant" element={<P><VoiceAssistant /></P>} />
-                  <Route path="/profile" element={<P><Profile /></P>} />
-                  <Route path="*" element={
-                    <div className="min-h-screen flex items-center justify-center">
-                      <div className="text-center">
-                        <p className="text-6xl font-bold text-gray-200 mb-4">404</p>
-                        <p className="text-gray-500 mb-4">Page not found</p>
-                        <a href="/" className="text-[#2D6A4F] hover:underline text-sm">Go home</a>
+            <div className="min-h-screen bg-transparent text-[#17211B]">
+              <Navbar onLoginClick={() => setLoginOpen(true)} />
+              <LoginModal open={loginOpen} onClose={() => setLoginOpen(false)} />
+              <main className="relative z-0">
+                <Suspense fallback={<PageLoader />}>
+                  <Routes>
+                    <Route path="/" element={<Home />} />
+                    <Route path="/prices" element={<P><Prices /></P>} />
+                    <Route path="/crop-advisor" element={<P><CropAdvisor /></P>} />
+                    <Route path="/disease-detect" element={<P><DiseaseDetect /></P>} />
+                    <Route path="/weather" element={<P><Weather /></P>} />
+                    <Route path="/alerts" element={<P><Alerts /></P>} />
+                    <Route path="/community" element={<P><Community /></P>} />
+                    <Route path="/schemes" element={<P><Schemes /></P>} />
+                    <Route path="/voice-assistant" element={<P><VoiceAssistant /></P>} />
+                    <Route path="/profile" element={<P><Profile /></P>} />
+                    <Route path="*" element={
+                      <div className="min-h-[60vh] flex items-center justify-center px-4">
+                        <div className="text-center">
+                          <p className="text-6xl font-black text-[#DDE7DF] mb-4 tracking-tight">404</p>
+                          <p className="text-base font-medium text-[#44544D] mb-4">Page not found</p>
+                          <a href="/" className="inline-flex items-center rounded-full border border-[#DDE7DF] bg-white px-4 py-2 text-sm font-semibold text-[#166534] shadow-sm hover:bg-[#F8FAF5]">Go home</a>
+                        </div>
                       </div>
-                    </div>
-                  } />
-                </Routes>
-              </Suspense>
-            </main>
-            <Footer />
+                    } />
+                  </Routes>
+                </Suspense>
+              </main>
+              <Footer />
+            </div>
           </BrowserRouter>
         </AuthProvider>
       </QueryClientProvider>

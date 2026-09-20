@@ -3,7 +3,7 @@ import { collection, onSnapshot, updateDoc, doc } from 'firebase/firestore'
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
-import { db } from '@/lib/firebase'
+import { db, isFirebaseConfigured } from '@/lib/firebase'
 import { useAuth } from '@/context/AuthContext'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -41,9 +41,10 @@ function createColoredIcon(color) {
 }
 
 export default function Alerts() {
-  const { user } = useAuth()
+  const { user, loading: authLoading } = useAuth()
   const [reports, setReports] = useState([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
   const [filterStatus, setFilterStatus] = useState('all')
   const [filterCrop, setFilterCrop] = useState('all')
   const [selected, setSelected] = useState(null)
@@ -51,16 +52,42 @@ export default function Alerts() {
   const isOfficer = user?.profile?.role === 'officer'
 
   useEffect(() => {
+    if (authLoading) return undefined
+
+    if (!user) {
+      setError('Please sign in to view disease alerts.')
+      setLoading(false)
+      return undefined
+    }
+
+    if (!isFirebaseConfigured || !db) {
+      setError('Firebase is not configured. Alerts cannot load yet.')
+      setLoading(false)
+      return undefined
+    }
+
     const unsub = onSnapshot(collection(db, 'diseaseReports'), (snap) => {
       const data = snap.docs.map(d => ({ id: d.id, ...d.data() }))
       setReports(data.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0)))
+      setError('')
+      setLoading(false)
+    }, (snapshotError) => {
+      setError(snapshotError.code === 'permission-denied'
+        ? 'You do not have permission to view disease alerts.'
+        : 'Unable to load disease alerts. Please try again later.')
       setLoading(false)
     })
     return unsub
-  }, [])
+  }, [authLoading, user?.uid])
 
   const updateStatus = async (id, status) => {
-    await updateDoc(doc(db, 'diseaseReports', id), { status, updatedAt: new Date() })
+    try {
+      await updateDoc(doc(db, 'diseaseReports', id), { status, updatedAt: new Date() })
+    } catch (updateError) {
+      setError(updateError.code === 'permission-denied'
+        ? 'You do not have permission to update alerts.'
+        : 'Unable to update this alert. Please try again.')
+    }
   }
 
   const crops = ['all', ...new Set(reports.map(r => r.cropType).filter(Boolean))]
@@ -79,6 +106,13 @@ export default function Alerts() {
         <h1 className="text-2xl font-bold text-[#1B4332]">Disease Alert Map</h1>
         <p className="text-sm text-gray-500 mt-1">Real-time disease outbreak reports from farmers</p>
       </div>
+
+      {error && (
+        <div className="mb-6 flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          <AlertTriangle className="h-4 w-4 shrink-0" />
+          {error}
+        </div>
+      )}
 
       {/* Legend */}
       <div className="flex flex-wrap gap-4 mb-4 text-sm">

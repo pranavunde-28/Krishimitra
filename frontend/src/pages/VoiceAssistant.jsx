@@ -71,30 +71,62 @@ function useSpeechSynthesis() {
   const [speaking, setSpeaking] = useState(false)
   const [supported] = useState(() => 'speechSynthesis' in window)
 
+  const cleanSpeechText = (text) => String(text || '')
+    .replace(/https?:\/\/\S+/gi, '')
+    .replace(/[*_`#>]/g, '')
+    .replace(/\[(.*?)\]\(.*?\)/g, '$1')
+    .replace(/[•●▪◦]/g, ', ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
   const speak = useCallback((text, langCode) => {
     if (!supported) return
     window.speechSynthesis.cancel()
 
-    const utterance = new SpeechSynthesisUtterance(text)
-    utterance.rate = 0.9
-    utterance.pitch = 1
-
-    // try to find a matching voice for the language
     const voices = window.speechSynthesis.getVoices()
     const match =
       voices.find(v => v.lang === langCode) ||
       voices.find(v => v.lang.startsWith(langCode.split('-')[0])) ||
-      // fallback: use Hindi voice for Marathi (both Devanagari script)
       (langCode.startsWith('mr') ? voices.find(v => v.lang.startsWith('hi')) : null) ||
       voices.find(v => v.lang.startsWith('en'))
 
-    if (match) utterance.voice = match
-    utterance.lang = langCode
+    const speechText = cleanSpeechText(text)
+    if (!speechText) return
+    const chunks = speechText.match(/[^.!?।]+[.!?।]+|[^.!?।]+$/g) || [speechText]
+    const queue = chunks.reduce((result, chunk) => {
+      const words = chunk.trim().split(' ')
+      for (let index = 0; index < words.length; index += 35) {
+        result.push(words.slice(index, index + 35).join(' '))
+      }
+      return result
+    }, [])
+    let chunkIndex = 0
 
-    utterance.onstart = () => setSpeaking(true)
-    utterance.onend = () => setSpeaking(false)
-    utterance.onerror = () => setSpeaking(false)
-    window.speechSynthesis.speak(utterance)
+    const speakNext = () => {
+      if (chunkIndex >= queue.length) {
+        setSpeaking(false)
+        return
+      }
+
+      const utterance = new SpeechSynthesisUtterance(queue[chunkIndex])
+      utterance.rate = 0.82
+      utterance.pitch = 1
+      if (match) {
+        utterance.voice = match
+        utterance.lang = match.lang
+      } else {
+        utterance.lang = langCode
+      }
+      utterance.onstart = () => setSpeaking(true)
+      utterance.onend = () => {
+        chunkIndex += 1
+        speakNext()
+      }
+      utterance.onerror = () => setSpeaking(false)
+      window.speechSynthesis.speak(utterance)
+    }
+
+    speakNext()
   }, [supported])
 
   // voices load async — wait for them
@@ -104,7 +136,11 @@ function useSpeechSynthesis() {
     if (voices.length > 0) {
       speak(text, langCode)
     } else {
-      window.speechSynthesis.onvoiceschanged = () => speak(text, langCode)
+      const handleVoicesChanged = () => {
+        window.speechSynthesis.removeEventListener('voiceschanged', handleVoicesChanged)
+        speak(text, langCode)
+      }
+      window.speechSynthesis.addEventListener('voiceschanged', handleVoicesChanged)
     }
   }, [speak, supported])
 
@@ -298,9 +334,7 @@ export default function VoiceAssistant() {
         {ttsSupported && (() => {
           const voices = window.speechSynthesis?.getVoices() || []
           const hasHindi = voices.some(v => v.lang.startsWith('hi'))
-          const hasMarathi = voices.some(v => v.lang.startsWith('mr'))
           if (lang === 'hi' && !hasHindi) return <span className="text-orange-400">⚠ Hindi voice not found — speaking in English</span>
-          if (lang === 'mr' && !hasMarathi) return <span className="text-orange-400">⚠ Marathi voice not available on Windows — using Hindi voice instead</span>
           return null
         })()}
         {speaking && (

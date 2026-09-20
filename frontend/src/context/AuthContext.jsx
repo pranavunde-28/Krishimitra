@@ -8,7 +8,7 @@ import {
   signInWithPhoneNumber,
 } from 'firebase/auth'
 import { doc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore'
-import { auth, db } from '@/lib/firebase'
+import { auth, db, isFirebaseConfigured } from '@/lib/firebase'
 
 const AuthContext = createContext(null)
 
@@ -19,7 +19,7 @@ function destroyRecaptcha() {
       window.recaptchaVerifier = null
     }
   } catch {}
-  // remove and recreate the container div so Firebase can render fresh
+
   const old = document.getElementById('recaptcha-container')
   if (old) {
     const parent = old.parentNode
@@ -35,13 +35,26 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
-      if (firebaseUser) {
+    if (!isFirebaseConfigured || !auth || !db) {
+      setUser(null)
+      setLoading(false)
+      return undefined
+    }
+
+    const unsub = onAuthStateChanged(auth, (firebaseUser) => {
+      setUser(firebaseUser)
+      setLoading(false)
+
+      if (!firebaseUser) return
+
+      void (async () => {
         try {
           const ref = doc(db, 'users', firebaseUser.uid)
           const snap = await getDoc(ref)
+          let profile = snap.data() || {}
+
           if (!snap.exists()) {
-            await setDoc(ref, {
+            profile = {
               uid: firebaseUser.uid,
               displayName: firebaseUser.displayName || '',
               email: firebaseUser.email || '',
@@ -50,27 +63,35 @@ export function AuthProvider({ children }) {
               language: 'en',
               bookmarkedSchemes: [],
               priceAlerts: [],
-              createdAt: serverTimestamp(),
-            })
+            }
+            await setDoc(ref, { ...profile, createdAt: serverTimestamp() })
           }
-          setUser({ ...firebaseUser, profile: snap.data() || {} })
+
+          if (auth.currentUser?.uid === firebaseUser.uid) {
+            setUser({ ...firebaseUser, profile })
+          }
         } catch {
-          setUser(firebaseUser)
+          // Firebase authentication remains valid even if the profile is unavailable.
         }
-      } else {
-        setUser(null)
-      }
-      setLoading(false)
+      })()
     })
     return unsub
   }, [])
 
-  const loginWithGoogle = () => {
+  const loginWithGoogle = async () => {
+    if (!isFirebaseConfigured || !auth) {
+      throw new Error('Firebase is not configured. Add your VITE_FIREBASE_* values to the frontend .env file.')
+    }
+
     const provider = new GoogleAuthProvider()
     return signInWithPopup(auth, provider)
   }
 
   const sendOTP = async (phoneNumber) => {
+    if (!isFirebaseConfigured || !auth) {
+      throw new Error('Firebase is not configured. Add your VITE_FIREBASE_* values to the frontend .env file.')
+    }
+
     destroyRecaptcha()
     const verifier = new RecaptchaVerifier(auth, 'recaptcha-container', {
       size: 'invisible',
@@ -79,13 +100,17 @@ export function AuthProvider({ children }) {
     return signInWithPhoneNumber(auth, phoneNumber, verifier)
   }
 
-  const logout = () => {
+  const logout = async () => {
+    if (!isFirebaseConfigured || !auth) {
+      return
+    }
+
     destroyRecaptcha()
     return signOut(auth)
   }
 
   return (
-    <AuthContext.Provider value={{ user, loading, loginWithGoogle, sendOTP, logout }}>
+    <AuthContext.Provider value={{ user, loading, loginWithGoogle, sendOTP, logout, isFirebaseConfigured }}>
       {children}
     </AuthContext.Provider>
   )

@@ -12,9 +12,18 @@ const firebaseConfig = {
   appId: import.meta.env.VITE_FIREBASE_APP_ID,
 }
 
-const app = initializeApp(firebaseConfig)
+const isPlaceholderValue = (value) => {
+  if (!value || typeof value !== 'string') return true
+  const normalized = value.trim().toLowerCase()
+  return normalized === '' || normalized.includes('your_') || normalized.includes('your') || normalized.includes('example') || normalized.includes('test') || normalized.includes('replace-me')
+}
 
-export const auth = getAuth(app)
-export const db = getFirestore(app)
-export const storage = getStorage(app)
+const hasFirebaseConfig = Object.values(firebaseConfig).every((value) => Boolean(value)) && !Object.values(firebaseConfig).some(isPlaceholderValue)
+
+const app = hasFirebaseConfig ? initializeApp(firebaseConfig) : null
+
+export const isFirebaseConfigured = hasFirebaseConfig
+export const auth = app ? getAuth(app) : null
+export const db = app ? getFirestore(app) : null
+export const storage = app ? getStorage(app) : null
 export default app
