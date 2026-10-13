@@ -7,7 +7,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { postDisease, postGroq } from '@/lib/api'
 import { useAuth } from '@/context/AuthContext'
 import { useLocation } from '@/hooks/useLocation'
-import { Upload, Camera, Bug, AlertTriangle, CheckCircle, Loader2, FileDown } from 'lucide-react'
+import { Upload, Camera, Bug, AlertTriangle, CheckCircle, Loader2, FileDown, Volume2, VolumeX } from 'lucide-react'
 import jsPDF from 'jspdf'
 
 const CROP_TYPES = ['Select crop (optional)', 'Tomato', 'Potato', 'Wheat', 'Rice', 'Cotton', 'Maize', 'Soybean', 'Sugarcane', 'Other']
@@ -16,6 +16,91 @@ const SEVERITY_COLORS = {
   low: 'bg-green-100 text-green-700',
   medium: 'bg-orange-100 text-orange-700',
   high: 'bg-red-100 text-red-700',
+}
+
+function formatInlineReport(text) {
+  return text.split(/(\*\*[^*]+\*\*|__[^_]+__|\*[^*]+\*|_[^_]+_|`[^`]+`)/g).filter(Boolean).map((part, index) => {
+    if (/^(\*\*|__)/.test(part)) return <strong key={index}>{part.slice(2, -2)}</strong>
+    if (/^(\*|_)/.test(part)) return <em key={index}>{part.slice(1, -1)}</em>
+    if (part.startsWith('`')) return <code key={index} className="rounded bg-black/5 px-1">{part.slice(1, -1)}</code>
+    return part
+  })
+}
+
+function FormattedDiseaseReport({ text }) {
+  const lines = String(text || '').replace(/\r/g, '').split('\n')
+  const blocks = []
+  let paragraph = []
+  let listItems = []
+  let listType = ''
+
+  const flushParagraph = () => {
+    if (!paragraph.length) return
+    blocks.push(<p key={`p-${blocks.length}`}>{formatInlineReport(paragraph.join(' '))}</p>)
+    paragraph = []
+  }
+
+  const flushList = () => {
+    if (!listItems.length) return
+    const List = listType === 'ordered' ? 'ol' : 'ul'
+    blocks.push(
+      <List key={`list-${blocks.length}`} className={`${listType === 'ordered' ? 'list-decimal' : 'list-disc'} space-y-1 pl-5`}>
+        {listItems.map((item, index) => <li key={index}>{formatInlineReport(item)}</li>)}
+      </List>
+    )
+    listItems = []
+    listType = ''
+  }
+
+  lines.forEach((line, index) => {
+    const trimmed = line.trim()
+    const heading = trimmed.match(/^#{1,3}\s+(.+)$/)
+    const section = trimmed.match(/^(?:\d+[.)]\s*)?(What is this disease|How it spreads|Immediate actions|Organic remedy|Chemical remedy|Prevention tips)\s*:?\s*(.*)$/i)
+    const bullet = trimmed.match(/^[-*+]\s+(.+)$/)
+    const ordered = trimmed.match(/^\d+[.)]\s+(.+)$/)
+
+    if (!trimmed) {
+      flushParagraph()
+      flushList()
+    } else if (heading || section) {
+      flushParagraph()
+      flushList()
+      const title = heading?.[1] || section[1]
+      blocks.push(<h3 key={`h-${index}`} className="font-semibold text-[#1B4332]">{formatInlineReport(title)}</h3>)
+      const remainder = section?.[2]?.trim()
+      if (remainder) paragraph.push(remainder)
+    } else if (bullet || ordered) {
+      flushParagraph()
+      const nextListType = ordered ? 'ordered' : 'unordered'
+      if (listItems.length && listType !== nextListType) flushList()
+      listType = nextListType
+      listItems.push((bullet || ordered)[1])
+    } else {
+      flushList()
+      paragraph.push(trimmed.replace(/^>\s?/, ''))
+    }
+  })
+
+  flushParagraph()
+  flushList()
+
+  return <div className="space-y-3">{blocks}</div>
+}
+
+function cleanReportForSpeech(text) {
+  return String(text || '')
+    .replace(/```[^\n]*\n?([\s\S]*?)```/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/https?:\/\/\S+/gi, ' ')
+    .replace(/^\s*#{1,6}\s*/gm, '')
+    .replace(/^\s*[-*+]\s+/gm, '. ')
+    .replace(/^\s*\d+[.)]\s+/gm, '. ')
+    .replace(/\*\*|__|[*_`~]/g, '')
+    .replace(/₹/g, ' rupees ')
+    .replace(/%/g, ' percent ')
+    .replace(/[^\p{L}\p{N}\p{M}\s.,!?।'’]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 export default function DiseaseDetect() {
@@ -33,10 +118,36 @@ export default function DiseaseDetect() {
   const [error, setError] = useState('')
   const [reported, setReported] = useState(false)
   const [reporting, setReporting] = useState(false)
+  const [isReadingReport, setIsReadingReport] = useState(false)
   const [webcamOpen, setWebcamOpen] = useState(false)
   const [stream, setStream] = useState(null)
   const videoRef = useRef()
   const canvasRef = useRef()
+
+  const toggleReportSpeech = () => {
+    if (!('speechSynthesis' in window)) return
+    if (window.speechSynthesis.speaking) {
+      window.speechSynthesis.cancel()
+      setIsReadingReport(false)
+      return
+    }
+
+    const text = cleanReportForSpeech(groqReport)
+    if (!text) return
+    const utterance = new SpeechSynthesisUtterance(text)
+    const appLanguage = localStorage.getItem('km_lang')?.split('-')[0] || 'en'
+    const langCode = appLanguage === 'mr' ? 'mr-IN' : appLanguage === 'hi' ? 'hi-IN' : 'en-IN'
+    const voice = window.speechSynthesis.getVoices().find(item => item.lang.toLowerCase() === langCode.toLowerCase())
+    utterance.lang = voice?.lang || langCode
+    if (voice) utterance.voice = voice
+    utterance.onstart = () => setIsReadingReport(true)
+    utterance.onend = () => setIsReadingReport(false)
+    utterance.onerror = () => setIsReadingReport(false)
+    window.speechSynthesis.cancel()
+    window.speechSynthesis.speak(utterance)
+  }
+
+  useEffect(() => () => window.speechSynthesis?.cancel(), [])
 
   const downloadPDF = () => {
     const pdf = new jsPDF()
@@ -323,7 +434,7 @@ Keep it simple and practical for an Indian farmer.`,
       setStream(mediaStream)
       setWebcamOpen(true)
       setError('')
-    } catch (err) {
+    } catch {
       setError('Camera access denied. Please allow camera permission.')
     }
   }
@@ -365,7 +476,7 @@ Keep it simple and practical for an Indian farmer.`,
         stream.getTracks().forEach(track => track.stop())
       }
     }
-  }, [])
+  }, [stream])
 
   return (
     <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 pt-20 pb-16">
@@ -519,7 +630,21 @@ Keep it simple and practical for an Indian farmer.`,
                     {Array(6).fill(0).map((_, i) => <Skeleton key={i} className="h-3 w-full" />)}
                   </div>
                 ) : (
-                  <pre className="whitespace-pre-wrap text-sm text-gray-700 leading-relaxed font-sans">{groqReport}</pre>
+                  <>
+                    <div className="text-sm text-gray-700 leading-relaxed">
+                      <FormattedDiseaseReport text={groqReport} />
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={toggleReportSpeech}
+                      className="mt-4 border-[#2D6A4F]/30 text-[#2D6A4F] hover:bg-[#D8F3DC]"
+                    >
+                      {isReadingReport ? <VolumeX className="mr-2 h-4 w-4" /> : <Volume2 className="mr-2 h-4 w-4" />}
+                      {isReadingReport ? 'Stop reading' : 'Listen to report'}
+                    </Button>
+                  </>
                 )}
               </CardContent>
             </Card>

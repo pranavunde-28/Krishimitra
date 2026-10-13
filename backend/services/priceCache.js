@@ -19,7 +19,8 @@ function isCacheFresh() {
   if (!fs.existsSync(CACHE_FILE)) return false
   try {
     const cache = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'))
-    return cache.fetchedDate === getTodayIST()
+    return cache.fetchedDate === getTodayIST() &&
+      Array.isArray(cache.records) && cache.records.length > 0
   } catch { return false }
 }
 
@@ -58,7 +59,7 @@ async function fetchAllForState(apiKey, state) {
   return records
 }
 
-async function refreshCache() {
+async function refreshCache(stateFilter) {
   const apiKey = process.env.DATA_GOV_IN_API_KEY
   if (!apiKey || apiKey === 'your_data_gov_in_key') {
     console.log('No API key — skipping cache refresh')
@@ -69,7 +70,8 @@ async function refreshCache() {
   const start = Date.now()
   const allRecords = []
 
-  for (const state of STATES) {
+  const statesToFetch = stateFilter ? [stateFilter] : STATES
+  for (const state of statesToFetch) {
     try {
       const records = await fetchAllForState(apiKey, state)
       allRecords.push(...records)
@@ -78,25 +80,39 @@ async function refreshCache() {
     }
   }
 
+  if (allRecords.length === 0) {
+    console.log('⚠️ Price refresh returned no records; keeping the last known cache')
+    return false
+  }
+
+  const previousCache = readCache()
+  const records = stateFilter && Array.isArray(previousCache?.records)
+    ? [
+        ...previousCache.records.filter(record => record.state !== stateFilter),
+        ...allRecords,
+      ]
+    : allRecords
   const cache = {
     fetchedDate: getTodayIST(),
     fetchedAt: new Date().toISOString(),
-    totalRecords: allRecords.length,
-    records: allRecords,
+    totalRecords: records.length,
+    records,
   }
 
   fs.writeFileSync(CACHE_FILE, JSON.stringify(cache), 'utf8')
-  console.log(`✅ Cache saved: ${allRecords.length} records in ${((Date.now() - start) / 1000).toFixed(1)}s`)
+  console.log(`✅ Cache saved: ${records.length} records in ${((Date.now() - start) / 1000).toFixed(1)}s`)
   return true
 }
 
-async function getCache() {
-  if (isCacheFresh()) {
+async function getCache(state) {
+  const cache = readCache()
+  const hasStateRecords = state && cache?.records?.some(record => record.state === state)
+  if (isCacheFresh() && (!state || hasStateRecords)) {
     console.log('📦 Serving from local cache')
-    return readCache()
+    return cache
   }
-  console.log('🔄 Cache stale — refreshing...')
-  await refreshCache()
+  console.log(`🔄 Cache missing fresh ${state || 'market'} prices — refreshing...`)
+  await refreshCache(state)
   return readCache()
 }
 

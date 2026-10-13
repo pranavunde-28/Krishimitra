@@ -10,23 +10,40 @@ const MOCK_PRICES = [
   { state: 'Maharashtra', district: 'Latur', market: 'Latur APMC', commodity: 'Soybean', variety: 'Local', grade: 'FAQ', arrival_date: '13/04/2026', min_price: 3800, max_price: 4200, modal_price: 4000 },
 ]
 
+const getSamplePrices = state => state
+  ? MOCK_PRICES.filter(record => record.state === state)
+  : MOCK_PRICES
+
 // GET /api/prices — serves from local cache
 router.get('/', async (req, res, next) => {
   try {
+    const { state } = req.query
     const apiKey = process.env.DATA_GOV_IN_API_KEY
     if (!apiKey || apiKey === 'your_data_gov_in_key') {
-      return res.json({ records: MOCK_PRICES, source: 'mock', total: MOCK_PRICES.length })
+      const records = getSamplePrices(state)
+      return res.json({ records, source: 'sample', total: records.length })
     }
 
-    const { state } = req.query
-    const cache = await getCache()
+    const cache = await getCache(state)
     if (!cache) {
-      return res.json({ records: MOCK_PRICES, source: 'mock', total: MOCK_PRICES.length })
+      const records = getSamplePrices(state)
+      return res.json({ records, source: 'sample', total: records.length })
     }
 
+    const cachedRecords = Array.isArray(cache.records) ? cache.records : []
     const records = state
-      ? cache.records.filter(r => r.state === state)
-      : cache.records
+      ? cachedRecords.filter(r => r.state === state)
+      : cachedRecords
+
+    if (records.length === 0) {
+      const fallbackRecords = getSamplePrices(state)
+      return res.json({
+        records: fallbackRecords,
+        total: fallbackRecords.length,
+        fetchedDate: cache.fetchedDate,
+        source: 'sample',
+      })
+    }
 
     res.json({
       records,
@@ -42,9 +59,13 @@ router.get('/', async (req, res, next) => {
 // POST /api/prices/refresh — manually trigger cache refresh
 router.post('/refresh', async (req, res, next) => {
   try {
-    await refreshCache()
+    const refreshed = await refreshCache(req.body?.state || req.query.state)
     const cache = readCache()
-    res.json({ success: true, total: cache?.totalRecords, fetchedDate: cache?.fetchedDate })
+    res.json({
+      success: refreshed,
+      total: cache?.totalRecords || 0,
+      fetchedDate: cache?.fetchedDate || null,
+    })
   } catch (err) {
     next(err)
   }

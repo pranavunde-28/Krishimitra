@@ -20,7 +20,41 @@ You help farmers with:
 
 Always respond in the same language the farmer asks in (Hindi, Marathi, or English).
 Keep answers short, practical and easy to understand for a rural farmer.
+Format answers for easy reading: start with a short direct answer, then use a numbered list for steps or bullets for multiple items. Use short paragraphs separated by a blank line and bold only important terms.
+Do not use tables, code blocks, decorative symbols, or raw URLs. Avoid headings unless the answer has distinct sections.
 When price data is provided, give specific numbers and mention the date.`
+
+router.get('/speech', async (req, res, next) => {
+  try {
+    const text = typeof req.query.text === 'string' ? req.query.text.trim() : ''
+    if (!text || [...text].length > 180) {
+      return res.status(400).json({ error: 'Speech text must be between 1 and 180 characters' })
+    }
+
+    const { data, headers } = await axios.get('https://translate.google.com/translate_tts', {
+      params: { ie: 'UTF-8', client: 'tw-ob', tl: 'mr', q: text },
+      headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'audio/mpeg' },
+      responseType: 'arraybuffer',
+      timeout: 15000,
+    })
+
+    if (!headers['content-type']?.includes('audio')) {
+      return res.status(502).json({ error: 'Marathi speech provider returned invalid audio' })
+    }
+
+    res.set({
+      'Content-Type': 'audio/mpeg',
+      'Cache-Control': 'private, max-age=3600',
+      'Content-Length': data.byteLength,
+    })
+    return res.send(Buffer.from(data))
+  } catch (err) {
+    if (err.response) {
+      return res.status(502).json({ error: 'Marathi speech service is temporarily unavailable' })
+    }
+    return next(err)
+  }
+})
 
 async function fetchPrices(commodity, state = 'Maharashtra') {
   try {

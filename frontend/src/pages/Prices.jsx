@@ -5,17 +5,9 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Badge } from '@/components/ui/badge'
-import { getPrices, postGroq } from '@/lib/api'
+import { getPrices, postGroq, refreshPrices } from '@/lib/api'
 import { formatPrice } from '@/lib/utils'
-import { RefreshCw, Download, TrendingUp, TrendingDown, Minus } from 'lucide-react'
-
-const MOCK_PRICES = [
-  { state: 'Maharashtra', district: 'Ahmednagar', market: 'Kopargaon APMC', commodity: 'Maize', variety: 'Other', grade: 'Non-FAQ', arrival_date: '13/04/2026', min_price: 1326, max_price: 1798, modal_price: 1600 },
-  { state: 'Maharashtra', district: 'Ahmednagar', market: 'Kopargaon APMC', commodity: 'Onion', variety: 'Red', grade: 'Local', arrival_date: '13/04/2026', min_price: 400, max_price: 981, modal_price: 875 },
-  { state: 'Maharashtra', district: 'Pune', market: 'Pune APMC', commodity: 'Tomato', variety: 'Local', grade: 'Medium', arrival_date: '13/04/2026', min_price: 800, max_price: 1200, modal_price: 1000 },
-  { state: 'Maharashtra', district: 'Nashik', market: 'Lasalgaon APMC', commodity: 'Onion', variety: 'Red', grade: 'Local', arrival_date: '13/04/2026', min_price: 600, max_price: 900, modal_price: 750 },
-  { state: 'Maharashtra', district: 'Latur', market: 'Latur APMC', commodity: 'Soybean', variety: 'Local', grade: 'FAQ', arrival_date: '13/04/2026', min_price: 3800, max_price: 4200, modal_price: 4000 },
-]
+import { RefreshCw, Download, TrendingUp } from 'lucide-react'
 
 const STATES = [
   'Andhra Pradesh', 'Bihar', 'Gujarat', 'Haryana', 'Karnataka',
@@ -34,22 +26,19 @@ const MH_DISTRICTS = [
 export default function Prices() {
   const queryClient = useQueryClient()
   const [state, setState] = useState('Maharashtra')
-  const [district, setDistrict] = useState('')
-  const [market, setMarket] = useState('')
-  const [commodity, setCommodity] = useState('')
+  const [district, setDistrict] = useState('All Districts')
+  const [market, setMarket] = useState('All Markets')
+  const [commodity, setCommodity] = useState('All Commodities')
   const [groqInsight, setGroqInsight] = useState('')
   const [insightLoading, setInsightLoading] = useState(false)
+  const [isRefreshing, setIsRefreshing] = useState(false)
 
   // fetch all records for selected state (no district/commodity filter — filter client side)
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['prices', state],
     queryFn: async () => {
-      try {
-        const r = await getPrices({ state })
-        return r.data
-      } catch {
-        return { records: MOCK_PRICES, source: 'mock' }
-      }
+      const r = await getPrices({ state })
+      return r.data
     },
     staleTime: 1000 * 60 * 10,
     refetchOnWindowFocus: false, // Don't refetch on window focus
@@ -57,8 +46,8 @@ export default function Prices() {
   })
 
   const allRecords = useMemo(() => {
-    const all = data?.records?.length ? data.records : MOCK_PRICES
-    return all.filter(r => r.state === state)
+    const all = Array.isArray(data?.records) ? data.records : []
+    return all.filter(r => !r.state || r.state === state)
   }, [data, state])
 
   // build dynamic district and commodity lists from actual data
@@ -95,16 +84,28 @@ export default function Prices() {
 
   // reset district/commodity when state changes
   useEffect(() => {
-    setDistrict('')
-    setMarket('')
-    setCommodity('')
+    setDistrict('All Districts')
+    setMarket('All Markets')
+    setCommodity('All Commodities')
   }, [state])
 
   // reset market and commodity when district changes
   useEffect(() => {
-    setMarket('')
-    setCommodity('')
+    setMarket('All Markets')
+    setCommodity('All Commodities')
   }, [district])
+
+  const handleForceRefresh = async () => {
+    setIsRefreshing(true)
+    try {
+      await refreshPrices(state)
+    } catch {
+      // Refresh the visible query even if the cache-refresh request fails.
+    } finally {
+      await queryClient.invalidateQueries({ queryKey: ['prices'] })
+      setIsRefreshing(false)
+    }
+  }
 
   // client-side filtering
   const records = useMemo(() => {
@@ -118,7 +119,12 @@ export default function Prices() {
 
   // Groq insight
   useEffect(() => {
-    if (!records.length) return
+    if (!records.length) {
+      setGroqInsight('')
+      setInsightLoading(false)
+      return
+    }
+    let cancelled = false
     const fetchInsight = async () => {
       setInsightLoading(true)
       try {
@@ -128,15 +134,16 @@ export default function Prices() {
         const { data: res } = await postGroq({
           messages: [{ role: 'user', content: `Given these mandi prices in ${state}${district && district !== 'All Districts' ? ', ' + district : ''}: ${summary}. Write a 2-sentence insight for a farmer about current price trends and whether it's a good time to sell. Be specific and practical.` }],
         })
-        setGroqInsight(res.text)
+        if (!cancelled) setGroqInsight(res.text)
       } catch {
-        setGroqInsight('')
+        if (!cancelled) setGroqInsight('')
       } finally {
-        setInsightLoading(false)
+        if (!cancelled) setInsightLoading(false)
       }
     }
     fetchInsight()
-  }, [records.length, state, district])
+    return () => { cancelled = true }
+  }, [records, state, district])
 
   // chart data
   const chartData = useMemo(() => {
@@ -166,16 +173,15 @@ export default function Prices() {
         <div>
           <h1 className="text-3xl font-bold bg-gradient-to-r from-[#1B4332] to-[#2D6A4F] bg-clip-text text-transparent">Crop Prices Dashboard</h1>
           <p className="text-sm text-gray-600 mt-2 flex items-center gap-2">
-            <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
-            Live mandi prices from Agmarknet · {isLoading ? '...' : `${records.length} records`}
+            <span className={`w-2 h-2 rounded-full ${data?.source === 'live' ? 'bg-green-500 animate-pulse' : 'bg-amber-500'}`}></span>
+            {isLoading ? 'Loading mandi prices...' : isError ? 'Prices unavailable' : data?.source === 'live' ? 'Live mandi prices' : 'Sample mandi prices'} · {isLoading ? '...' : `${records.length} records`}
           </p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={() => {
-            queryClient.clear()
-            window.location.reload()
-          }} className="border-[#C62828] text-[#C62828] hover:bg-red-50 transition-all hover:scale-105">
-            <RefreshCw className="w-4 h-4 mr-1" /> Force Refresh
+          <Button variant="outline" size="sm" onClick={handleForceRefresh} disabled={isRefreshing}
+            className="border-[#C62828] text-[#C62828] hover:bg-red-50 transition-all hover:scale-105">
+            <RefreshCw className={`w-4 h-4 mr-1 ${isRefreshing ? 'animate-spin' : ''}`} />
+            {isRefreshing ? 'Refreshing...' : 'Force Refresh'}
           </Button>
           <Button variant="outline" size="sm" onClick={() => refetch()} className="border-[#2D6A4F] text-[#2D6A4F] hover:bg-green-50 transition-all hover:scale-105">
             <RefreshCw className="w-4 h-4 mr-1" /> Refresh
@@ -205,7 +211,10 @@ export default function Prices() {
           </div>
           <div className="flex flex-col gap-1.5">
             <label className="text-xs text-gray-600 font-semibold">Market</label>
-            <select value={market} onChange={e => setMarket(e.target.value)}
+            <select value={market} onChange={e => {
+              setMarket(e.target.value)
+              setCommodity('All Commodities')
+            }}
               className="border-2 border-gray-300 rounded-lg px-4 py-2 text-sm focus:border-[#2D6A4F] focus:outline-none focus:ring-2 focus:ring-[#2D6A4F]/20 transition-all min-w-[160px]">
               {isLoading ? <option>Loading...</option> : markets.map(m => <option key={m}>{m}</option>)}
             </select>
@@ -243,18 +252,18 @@ export default function Prices() {
                     {isLoading ? (
                       Array(6).fill(0).map((_, i) => (
                         <tr key={i} className="border-t border-gray-100">
-                          {Array(6).fill(0).map((_, j) => (
+                          {Array(8).fill(0).map((_, j) => (
                             <td key={j} className="px-4 py-3"><Skeleton className="h-4 w-full" /></td>
                           ))}
                         </tr>
                       ))
                     ) : isError ? (
-                      <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-400">
+                      <tr><td colSpan={8} className="px-4 py-8 text-center text-gray-400">
                         Failed to load prices.
                         <button onClick={() => refetch()} className="ml-2 text-[#2D6A4F] underline">Retry</button>
                       </td></tr>
                     ) : records.length === 0 ? (
-                      <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-400">No records found for selected filters.</td></tr>
+                      <tr><td colSpan={8} className="px-4 py-8 text-center text-gray-400">No records found for selected filters.</td></tr>
                     ) : (
                       records.map((r, i) => (
                         <tr key={i} className="border-t border-gray-100 hover:bg-gradient-to-r hover:from-[#f0fdf4] hover:to-white transition-all">

@@ -1,9 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
 import { Mic, MicOff, Volume2, VolumeX, Send, Trash2 } from 'lucide-react'
-import { postVoice } from '@/lib/api'
+import { getVoiceSpeechUrl, postVoice } from '@/lib/api'
 
 const LANGUAGES = [
   { code: 'en', label: 'English', speechCode: 'en-IN' },
@@ -33,6 +32,98 @@ const SUGGESTIONS_MR = [
   'टोमॅटोच्या रोगावर उपाय?',
   'पीएम किसान योजना काय आहे?',
 ]
+
+function renderInlineMarkdown(text) {
+  const tokens = text.split(/(\*\*[^*]+\*\*|__[^_]+__|\*[^*]+\*|_[^_]+_|`[^`]+`|\[[^\]]+\]\(https?:\/\/[^)]+\))/g)
+
+  return tokens.filter(Boolean).map((token, index) => {
+    const link = token.match(/^\[([^\]]+)\]\((https?:\/\/[^)]+)\)$/i)
+    if (link) {
+      return <a key={index} href={link[2]} target="_blank" rel="noreferrer" className="text-[#2D6A4F] underline">{link[1]}</a>
+    }
+    if (/^(\*\*|__)/.test(token)) return <strong key={index}>{token.slice(2, -2)}</strong>
+    if (/^(\*|_)/.test(token)) return <em key={index}>{token.slice(1, -1)}</em>
+    if (token.startsWith('`')) return <code key={index} className="rounded bg-black/5 px-1">{token.slice(1, -1)}</code>
+    return token
+  })
+}
+
+function AssistantAnswer({ text }) {
+  const lines = String(text || '').replace(/\r/g, '').split('\n')
+  const blocks = []
+  let paragraph = []
+  let listItems = []
+  let listType = ''
+
+  const flushParagraph = () => {
+    if (!paragraph.length) return
+    blocks.push(<p key={`p-${blocks.length}`}>{renderInlineMarkdown(paragraph.join(' '))}</p>)
+    paragraph = []
+  }
+
+  const flushList = () => {
+    if (!listItems.length) return
+    const List = listType === 'ordered' ? 'ol' : 'ul'
+    blocks.push(
+      <List key={`list-${blocks.length}`} className={`${listType === 'ordered' ? 'list-decimal' : 'list-disc'} space-y-1 pl-5`}>
+        {listItems.map((item, index) => <li key={index}>{renderInlineMarkdown(item)}</li>)}
+      </List>
+    )
+    listItems = []
+    listType = ''
+  }
+
+  lines.forEach((line, index) => {
+    const trimmed = line.trim()
+    const heading = trimmed.match(/^#{1,3}\s+(.+)$/)
+    const bullet = trimmed.match(/^[-*+]\s+(.+)$/)
+    const ordered = trimmed.match(/^\d+[.)]\s+(.+)$/)
+
+    if (!trimmed) {
+      flushParagraph()
+      flushList()
+    } else if (heading) {
+      flushParagraph()
+      flushList()
+      blocks.push(<h3 key={`h-${index}`} className="font-semibold text-[#1B4332]">{renderInlineMarkdown(heading[1])}</h3>)
+    } else if (bullet || ordered) {
+      flushParagraph()
+      const nextListType = ordered ? 'ordered' : 'unordered'
+      if (listItems.length && listType !== nextListType) flushList()
+      listType = nextListType
+      listItems.push((bullet || ordered)[1])
+    } else {
+      flushList()
+      paragraph.push(trimmed.replace(/^>\s?/, ''))
+    }
+  })
+
+  flushParagraph()
+  flushList()
+
+  return <div className="space-y-2">{blocks}</div>
+}
+
+function cleanSpeechText(text, langCode) {
+  const currencyWord = langCode.startsWith('mr') || langCode.startsWith('hi') ? 'रुपये' : 'rupees'
+  return String(text || '')
+    .replace(/```[^\n]*\n?([\s\S]*?)```/g, '$1')
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/https?:\/\/\S+/gi, ' ')
+    .replace(/^\s*#{1,6}\s*/gm, '')
+    .replace(/^\s*>\s?/gm, '')
+    .replace(/^\s*[-*+]\s+/gm, '. ')
+    .replace(/^\s*\d+[.)]\s+/gm, '. ')
+    .replace(/\*\*|__|[*_`~]/g, '')
+    .replace(/₹/g, ` ${currencyWord} `)
+    .replace(/%/g, ' percent ')
+    .replace(/[•●▪◦|]/g, ', ')
+    .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, ' ')
+    .replace(/[^\p{L}\p{N}\p{M}\s.,!?।'’]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
 
 function useSpeechRecognition(lang, onResult) {
   const recognitionRef = useRef(null)
@@ -69,29 +160,87 @@ function useSpeechRecognition(lang, onResult) {
 
 function useSpeechSynthesis() {
   const [speaking, setSpeaking] = useState(false)
+  const [speechError, setSpeechError] = useState('')
   const [supported] = useState(() => 'speechSynthesis' in window)
+  const audioRef = useRef(null)
+  const speechRunRef = useRef(0)
+  const [voices, setVoices] = useState(() => window.speechSynthesis.getVoices())
 
-  const cleanSpeechText = (text) => String(text || '')
-    .replace(/https?:\/\/\S+/gi, '')
-    .replace(/[*_`#>]/g, '')
-    .replace(/\[(.*?)\]\(.*?\)/g, '$1')
-    .replace(/[•●▪◦]/g, ', ')
-    .replace(/\s+/g, ' ')
-    .trim()
+  useEffect(() => {
+    const updateVoices = () => setVoices(window.speechSynthesis.getVoices())
+    window.speechSynthesis.addEventListener('voiceschanged', updateVoices)
+    return () => window.speechSynthesis.removeEventListener('voiceschanged', updateVoices)
+  }, [])
 
   const speak = useCallback((text, langCode) => {
     if (!supported) return
+    const runId = ++speechRunRef.current
     window.speechSynthesis.cancel()
+    audioRef.current?.pause()
+    audioRef.current = null
+    setSpeechError('')
 
     const voices = window.speechSynthesis.getVoices()
-    const match =
-      voices.find(v => v.lang === langCode) ||
-      voices.find(v => v.lang.startsWith(langCode.split('-')[0])) ||
-      (langCode.startsWith('mr') ? voices.find(v => v.lang.startsWith('hi')) : null) ||
-      voices.find(v => v.lang.startsWith('en'))
+    const language = langCode.split('-')[0].toLowerCase()
+    const match = voices.find(v => v.lang.toLowerCase() === langCode.toLowerCase()) ||
+      voices.find(v => v.lang.toLowerCase().startsWith(`${language}-`)) ||
+      voices.find(v => v.lang.toLowerCase() === language)
 
-    const speechText = cleanSpeechText(text)
+    const speechText = cleanSpeechText(text, langCode)
     if (!speechText) return
+
+    if (language === 'mr' && !match) {
+      const queue = []
+      let currentChunk = ''
+      speechText.split(/\s+/).forEach(word => {
+        const nextChunk = currentChunk ? `${currentChunk} ${word}` : word
+        if (nextChunk.length > 160 && currentChunk) {
+          queue.push(currentChunk)
+          currentChunk = word
+        } else {
+          currentChunk = nextChunk
+        }
+      })
+      if (currentChunk) queue.push(currentChunk)
+
+      let chunkIndex = 0
+      const playNextChunk = () => {
+        if (runId !== speechRunRef.current) return
+        if (chunkIndex >= queue.length) {
+          audioRef.current = null
+          setSpeaking(false)
+          return
+        }
+
+        const audio = new Audio()
+        audio.crossOrigin = 'anonymous'
+        audio.src = getVoiceSpeechUrl(queue[chunkIndex])
+        audioRef.current = audio
+        audio.onplay = () => setSpeaking(true)
+        audio.onended = () => {
+          chunkIndex += 1
+          playNextChunk()
+        }
+        audio.onerror = () => {
+          if (runId !== speechRunRef.current) return
+          audioRef.current = null
+          setSpeaking(false)
+          setSpeechError('Marathi speech service is unavailable. Please try again shortly.')
+        }
+        audio.play().catch(error => {
+          if (runId !== speechRunRef.current) return
+          audioRef.current = null
+          setSpeaking(false)
+          setSpeechError(error.name === 'NotAllowedError'
+            ? 'Browser blocked audio. Press Listen on the answer to try again.'
+            : 'Marathi speech service is unavailable. Please try again shortly.')
+        })
+      }
+
+      playNextChunk()
+      return
+    }
+
     const chunks = speechText.match(/[^.!?।]+[.!?।]+|[^.!?।]+$/g) || [speechText]
     const queue = chunks.reduce((result, chunk) => {
       const words = chunk.trim().split(' ')
@@ -133,7 +282,7 @@ function useSpeechSynthesis() {
   const speakWhenReady = useCallback((text, langCode) => {
     if (!supported) return
     const voices = window.speechSynthesis.getVoices()
-    if (voices.length > 0) {
+    if (voices.length > 0 || langCode.toLowerCase().startsWith('mr')) {
       speak(text, langCode)
     } else {
       const handleVoicesChanged = () => {
@@ -145,11 +294,15 @@ function useSpeechSynthesis() {
   }, [speak, supported])
 
   const stop = useCallback(() => {
+    speechRunRef.current += 1
     window.speechSynthesis.cancel()
+    audioRef.current?.pause()
+    audioRef.current = null
     setSpeaking(false)
+    setSpeechError('')
   }, [])
 
-  return { speaking, supported, speak: speakWhenReady, stop }
+  return { speaking, supported, voices, speechError, speak: speakWhenReady, stop }
 }
 
 export default function VoiceAssistant() {
@@ -159,7 +312,7 @@ export default function VoiceAssistant() {
     { role: 'assistant', text: 'Namaste! I am KrishiMitra Voice Assistant. Ask me anything about farming, crop prices, weather, or government schemes. You can speak or type your question.' }
   ])
   const [loading, setLoading] = useState(false)
-  const [autoSpeak, setAutoSpeak] = useState(true)
+  const [autoSpeak, setAutoSpeak] = useState(false)
   const messagesEndRef = useRef(null)
 
   const currentLang = LANGUAGES.find(l => l.code === lang)
@@ -169,7 +322,7 @@ export default function VoiceAssistant() {
   }, [])
 
   const { listening, supported: micSupported, start, stop } = useSpeechRecognition(currentLang.speechCode, handleResult)
-  const { speaking, supported: ttsSupported, speak, stop: stopSpeaking } = useSpeechSynthesis()
+  const { speaking, supported: ttsSupported, voices, speechError, speak, stop: stopSpeaking } = useSpeechSynthesis()
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -189,10 +342,14 @@ export default function VoiceAssistant() {
       setMessages(prev => [...prev, {
         role: 'assistant',
         text: answer,
+        speechCode: currentLang.speechCode,
         searchUsed: data.searchUsed,
         priceUsed: data.priceUsed,
       }])
-      if (autoSpeak && ttsSupported) speak(answer, currentLang.speechCode)
+      const hasNativeVoice = voices.some(voice => voice.lang.toLowerCase().startsWith(lang))
+      if (autoSpeak && ttsSupported && (lang !== 'mr' || hasNativeVoice)) {
+        speak(answer, currentLang.speechCode)
+      }
     } catch (e) {
       const errMsg = e.message || 'Something went wrong. Please try again.'
       setMessages(prev => [...prev, { role: 'assistant', text: errMsg, isError: true }])
@@ -249,7 +406,21 @@ export default function VoiceAssistant() {
                     ? 'bg-[#FFEBEE] text-[#C62828] rounded-bl-sm'
                     : 'bg-gray-100 text-gray-800 rounded-bl-sm'
                 }`}>
-                  <span translate="no">{msg.text}</span>
+                  {msg.role === 'assistant' ? (
+                    <AssistantAnswer text={msg.text} />
+                  ) : (
+                    <span translate="no">{msg.text}</span>
+                  )}
+                  {msg.role === 'assistant' && msg.speechCode && ttsSupported && (
+                    <button
+                      onClick={() => speaking ? stopSpeaking() : speak(msg.text, msg.speechCode)}
+                      className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-[#2D6A4F]/20 px-2.5 py-1.5 text-xs font-medium text-[#2D6A4F] hover:bg-[#D8F3DC]/60"
+                      aria-label={speaking ? 'Stop reading this answer' : 'Read this answer aloud'}
+                    >
+                      {speaking ? <VolumeX className="h-3.5 w-3.5" /> : <Volume2 className="h-3.5 w-3.5" />}
+                      {speaking ? 'Stop reading' : 'Listen'}
+                    </button>
+                  )}
                   {msg.searchUsed && (
                     <span className="block mt-1 text-xs opacity-60">🌐 Web search used</span>
                   )}
@@ -331,12 +502,7 @@ export default function VoiceAssistant() {
       <div className="flex flex-wrap gap-3 mt-3 text-xs text-gray-400">
         {!micSupported && <span className="text-orange-400">⚠ Microphone not supported in this browser</span>}
         {!ttsSupported && <span className="text-orange-400">⚠ Text-to-speech not supported in this browser</span>}
-        {ttsSupported && (() => {
-          const voices = window.speechSynthesis?.getVoices() || []
-          const hasHindi = voices.some(v => v.lang.startsWith('hi'))
-          if (lang === 'hi' && !hasHindi) return <span className="text-orange-400">⚠ Hindi voice not found — speaking in English</span>
-          return null
-        })()}
+        {speechError && <span className="text-orange-500">{speechError}</span>}
         {speaking && (
           <button onClick={stopSpeaking} className="text-[#2D6A4F] hover:underline">
             Stop speaking
