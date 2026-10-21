@@ -15,7 +15,7 @@ const firebaseConfig = {
 const isPlaceholderValue = (value) => {
   if (!value || typeof value !== 'string') return true
   const normalized = value.trim().toLowerCase()
-  return normalized === '' || normalized.includes('your_') || normalized.includes('your') || normalized.includes('example') || normalized.includes('test') || normalized.includes('replace-me')
+  return normalized === '' || normalized.includes('your_') || normalized.includes('your-') || normalized.includes('example') || normalized === 'test' || normalized.includes('replace-me')
 }
 
 const hasFirebaseConfig = Object.values(firebaseConfig).every((value) => Boolean(value)) && !Object.values(firebaseConfig).some(isPlaceholderValue)
@@ -23,6 +23,7 @@ const hasFirebaseConfig = Object.values(firebaseConfig).every((value) => Boolean
 const app = hasFirebaseConfig ? initializeApp(firebaseConfig) : null
 
 export const isFirebaseConfigured = hasFirebaseConfig
+export const firebaseProjectId = hasFirebaseConfig ? firebaseConfig.projectId : null
 export const auth = app ? getAuth(app) : null
 export const db = app ? getFirestore(app) : null
 export const storage = app ? getStorage(app) : null

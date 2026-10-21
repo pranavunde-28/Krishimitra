@@ -27,6 +27,119 @@ function formatInlineReport(text) {
   })
 }
 
+function parseVisionDetection(raw) {
+  const text = String(raw || '').trim()
+  const parsed = { diseaseName: '', confidence: null, symptoms: [], actions: [], notes: '' }
+
+  try {
+    const jsonText = text.match(/\{[\s\S]*\}/)?.[0]
+    if (jsonText) {
+      const data = JSON.parse(jsonText)
+      parsed.diseaseName = data.disease_name || data.diseaseName || data.diagnosis || ''
+      const confidence = data.confidence_percent ?? data.confidence
+      const numericConfidence = Number(String(confidence ?? '').match(/\d+(?:\.\d+)?/)?.[0])
+      parsed.confidence = Number.isFinite(numericConfidence) ? Math.max(0, Math.min(100, Math.round(numericConfidence))) : null
+      const toList = value => (Array.isArray(value) ? value : String(value || '').split(/\n|;/))
+        .map(item => String(item).replace(/^\s*[-*+•\d.)]+\s*/, '').trim())
+        .filter(Boolean)
+      parsed.symptoms = toList(data.visible_symptoms || data.symptoms)
+      parsed.actions = toList(data.immediate_actions || data.actions)
+      if (!parsed.diseaseName) parsed.diseaseName = 'Unable to identify reliably'
+      return parsed
+    }
+  } catch {
+    // Continue with the labelled-text parser for non-JSON model responses.
+  }
+
+  let currentSection = ''
+  const labels = [
+    ['diseaseName', /^(?:disease(?: name)?|diagnosis|result)\s*:\s*(.*)$/i],
+    ['confidence', /^confidence(?: level| score)?\s*:\s*(.*)$/i],
+    ['symptoms', /^(?:(?:visible )?symptoms|symptoms observed)\s*:\s*(.*)$/i],
+    ['actions', /^(?:(?:immediate|recommended) )?(?:(?:treatment|next) )?(?:actions|steps)(?:\s*\([^)]*\))?\s*:\s*(.*)$/i],
+  ]
+  const extraLines = []
+
+  text.split(/\r?\n/).forEach(line => {
+    const cleanLine = line.trim().replace(/^#{1,6}\s*/, '').replace(/\*\*/g, '').replace(/^\*\s*/, '')
+    const field = labels.find(([, pattern]) => pattern.test(cleanLine))
+    if (field) {
+      currentSection = field[0]
+      const value = cleanLine.match(field[1])?.[1]?.trim() || ''
+      if (currentSection === 'diseaseName') parsed.diseaseName = value
+      if (currentSection === 'confidence') {
+        const number = value.match(/\d+(?:\.\d+)?/)?.[0]
+        parsed.confidence = number ? Math.max(0, Math.min(100, Math.round(Number(number)))) : null
+      }
+      if (currentSection === 'symptoms' && value) parsed.symptoms.push(value.replace(/^[-*+•]\s*/, ''))
+      if (currentSection === 'actions' && value) parsed.actions.push(value.replace(/^[-*+•]\s*/, ''))
+      return
+    }
+
+    const value = cleanLine.replace(/^[-*+•\d.)]+\s*/, '').trim()
+    if (!value) return
+    if (currentSection === 'symptoms') parsed.symptoms.push(value)
+    else if (currentSection === 'actions') parsed.actions.push(value)
+    else extraLines.push(value)
+  })
+
+  if (!parsed.diseaseName) parsed.diseaseName = 'Unable to identify reliably'
+  if (extraLines.length) parsed.notes = extraLines.join(' ')
+  return parsed
+}
+
+const DISEASE_REPORT_SECTIONS = [
+  { title: 'What is this disease', aliases: ['what is this disease', 'disease overview', 'diagnosis'] },
+  { title: 'How it spreads', aliases: ['how it spreads', 'spread', 'transmission'] },
+  { title: 'Immediate actions', aliases: ['immediate actions', 'immediate steps', 'what to do now'] },
+  { title: 'Organic remedy', aliases: ['organic remedy', 'organic treatment'] },
+  { title: 'Chemical remedy', aliases: ['chemical remedy', 'chemical treatment'] },
+  { title: 'Prevention tips', aliases: ['prevention tips', 'prevention', 'how to prevent'] },
+]
+
+function normalizeDiseaseReport(raw, diseaseName) {
+  const sections = Object.fromEntries(DISEASE_REPORT_SECTIONS.map(({ title }) => [title, []]))
+  let currentTitle = ''
+  const unsectioned = []
+  const lines = String(raw || '').replace(/\r/g, '').split('\n')
+
+  lines.forEach(line => {
+    const cleaned = line.trim()
+      .replace(/^#{1,6}\s*/, '')
+      .replace(/^\d+[.)]\s*/, '')
+      .replace(/\*\*|__/g, '')
+      .replace(/^\*+|\*+$/g, '')
+      .trim()
+    const match = DISEASE_REPORT_SECTIONS.flatMap(section => section.aliases.map(alias => ({ ...section, alias })))
+      .map(section => ({ section, match: cleaned.match(new RegExp(`^${section.alias}(?:\\s*\\([^)]*\\))?\\s*:?\\s*(.*)$`, 'i')) }))
+      .find(item => item.match)
+
+    if (match) {
+      currentTitle = match.section.title
+      const remainder = match.match[1]?.trim()
+      if (remainder) sections[currentTitle].push(remainder)
+    } else if (cleaned) {
+      if (currentTitle) sections[currentTitle].push(line.trim())
+      else unsectioned.push(line.trim())
+    }
+  })
+
+  if (unsectioned.length && !Object.values(sections).some(linesInSection => linesInSection.length)) {
+    sections['What is this disease'].push(...unsectioned)
+  }
+
+  const defaults = {
+    'What is this disease': `The image-based result is ${diseaseName || 'uncertain'}. Image analysis can be uncertain; confirm with a local agriculture officer.`,
+    'How it spreads': 'Spread depends on the confirmed disease. Keep affected plants separate where practical and clean tools after use.',
+    'Immediate actions': 'Inspect nearby plants, remove severely affected material where appropriate, and seek local agricultural advice before treatment.',
+    'Organic remedy': 'Use an organic treatment only if it is approved for this crop and confirmed problem; follow its label.',
+    'Chemical remedy': 'No specific chemical is recommended from an image alone. Confirm the problem and use only a locally approved product exactly as labeled.',
+    'Prevention tips': 'Use healthy planting material, keep tools clean, monitor the crop regularly, and follow crop-specific local guidance.',
+  }
+
+  return DISEASE_REPORT_SECTIONS.map(({ title }) => `${title}:\n${sections[title].length ? sections[title].join('\n') : defaults[title]}`).join('\n\n')
+}
+
 function FormattedDiseaseReport({ text }) {
   const lines = String(text || '').replace(/\r/g, '').split('\n')
   const blocks = []
@@ -55,7 +168,12 @@ function FormattedDiseaseReport({ text }) {
   lines.forEach((line, index) => {
     const trimmed = line.trim()
     const heading = trimmed.match(/^#{1,3}\s+(.+)$/)
-    const section = trimmed.match(/^(?:\d+[.)]\s*)?(What is this disease|How it spreads|Immediate actions|Organic remedy|Chemical remedy|Prevention tips)\s*:?\s*(.*)$/i)
+    const normalizedHeading = trimmed
+      .replace(/^#{1,6}\s*/, '')
+      .replace(/^\d+[.)]\s*/, '')
+      .replace(/\*\*|__/g, '')
+      .trim()
+    const section = normalizedHeading.match(/^(What is this disease|How it spreads|Immediate actions(?:\s*\([^)]*\))?|Organic remedy|Chemical remedy|Prevention tips)\s*:?\s*(.*)$/i)
     const bullet = trimmed.match(/^[-*+]\s+(.+)$/)
     const ordered = trimmed.match(/^\d+[.)]\s+(.+)$/)
 
@@ -65,7 +183,7 @@ function FormattedDiseaseReport({ text }) {
     } else if (heading || section) {
       flushParagraph()
       flushList()
-      const title = heading?.[1] || section[1]
+      const title = section ? section[1].replace(/\s*\([^)]*\)/, '') : heading[1]
       blocks.push(<h3 key={`h-${index}`} className="font-semibold text-[#1B4332]">{formatInlineReport(title)}</h3>)
       const remainder = section?.[2]?.trim()
       if (remainder) paragraph.push(remainder)
@@ -105,7 +223,7 @@ function cleanReportForSpeech(text) {
 
 export default function DiseaseDetect() {
   const { user } = useAuth()
-  const { lat, lon, loading: locationLoading } = useLocation()
+  const { lat, lon, loading: locationLoading, error: locationError } = useLocation()
   const fileRef = useRef()
   const uploadCountRef = useRef(0)
 
@@ -123,6 +241,8 @@ export default function DiseaseDetect() {
   const [stream, setStream] = useState(null)
   const videoRef = useRef()
   const canvasRef = useRef()
+  const hasValidLocation = Number.isFinite(lat) && Number.isFinite(lon)
+    && lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180
 
   const toggleReportSpeech = () => {
     if (!('speechSynthesis' in window)) return
@@ -204,11 +324,11 @@ export default function DiseaseDetect() {
     pdf.setFontSize(9)
     pdf.text(`Crop Type: ${cropType || 'Not specified'}`, margin, y)
     y += 5
-    pdf.text(`Confidence: ${result?.confidence || 0}%`, margin, y)
+    pdf.text(`Confidence: ${Number.isFinite(result?.confidence) ? `${result.confidence}%` : 'Not available'}`, margin, y)
     y += 5
-    pdf.text(`Severity: ${result?.confidence > 70 ? 'High' : result?.confidence > 40 ? 'Medium' : 'Low'}`, margin, y)
+    pdf.text(`Severity: ${Number.isFinite(result?.confidence) ? (result.confidence > 70 ? 'High' : result.confidence > 40 ? 'Medium' : 'Low') : 'Not assessed'}`, margin, y)
     y += 5
-    pdf.text(`Location: ${lat ? `${lat.toFixed(4)}, ${lon.toFixed(4)}` : 'Not available'}`, margin, y)
+    pdf.text(`Location: ${hasValidLocation ? `${lat.toFixed(4)}, ${lon.toFixed(4)}` : 'Not available'}`, margin, y)
     y += 10
 
     // AI report
@@ -292,25 +412,29 @@ export default function DiseaseDetect() {
 
       // parse result from either crop.health or groq-vision
       let diseaseName = 'Unknown'
-      let confidence = 0
+      let confidence = null
       let description = ''
 
+      let symptoms = []
+      let actions = []
       if (detectData.source === 'groq-vision') {
-        diseaseName = 'See AI Report Below'
-        confidence = 85
-        description = detectData.result?.raw || ''
+        const visionResult = parseVisionDetection(detectData.result?.raw)
+        diseaseName = visionResult.diseaseName
+        confidence = visionResult.confidence
+        symptoms = visionResult.symptoms
+        actions = visionResult.actions
+        description = visionResult.notes
       } else if (detectData.source === 'crop.health') {
         const top = detectData.result?.result?.disease?.suggestions?.[0]
         diseaseName = top?.name || 'Unknown'
-        confidence = Math.round((top?.probability || 0) * 100)
+        confidence = Number.isFinite(top?.probability) ? Math.round(top.probability * 100) : null
         description = top?.details?.description || ''
       } else {
-        diseaseName = 'Analysis Complete'
-        confidence = 0
+        diseaseName = 'Unable to identify reliably'
         description = 'Configure API keys for detailed analysis'
       }
 
-      const parsed = { diseaseName, confidence, description, source: detectData.source }
+      const parsed = { diseaseName, confidence, description, symptoms, actions, source: detectData.source }
       setResult(parsed)
 
       setStatus('insights')
@@ -318,22 +442,28 @@ export default function DiseaseDetect() {
         const { data: groqData } = await postGroq({
           messages: [{
             role: 'user',
-            content: `A farmer uploaded a crop image${cropType ? ` of ${cropType}` : ''}. The disease detection result is: "${diseaseName}". ${description ? `Description: ${description}` : ''}
-          
-Generate a farmer-friendly report with these sections:
-1. What is this disease
-2. How it spreads  
-3. Immediate actions (2-3 steps)
-4. Organic remedy
-5. Chemical remedy
-6. Prevention tips
+            content: `Write a concise, farmer-friendly report for India. Use exactly these six headings, in this order, each on its own line, with the heading followed by a colon:
+What is this disease:
+How it spreads:
+Immediate actions:
+Organic remedy:
+Chemical remedy:
+Prevention tips:
+Put practical advice under each heading. Do not invent a diagnosis or recommend a specific pesticide when the disease is uncertain; advise confirmation by a local agriculture officer and following product labels.
 
-Keep it simple and practical for an Indian farmer.`,
+Case details: ${JSON.stringify({
+              crop: cropType || 'unspecified',
+              disease: String(diseaseName).slice(0, 120),
+              confidence: Number.isFinite(confidence) ? `${confidence}%` : 'not available',
+              symptoms: symptoms.slice(0, 3).map(item => String(item).slice(0, 120)),
+              actions: actions.slice(0, 3).map(item => String(item).slice(0, 120)),
+              assessment: String(description).slice(0, 200),
+            })}`,
           }],
         })
-        setGroqReport(groqData.text || 'AI insights are currently unavailable. Please follow the visible symptoms and consult a local agriculture officer.')
+        setGroqReport(normalizeDiseaseReport(groqData.text || '', diseaseName))
       } catch {
-        setGroqReport('AI insights are currently unavailable. The disease detection result is still valid. Please consult a local agriculture officer for treatment advice.')
+        setGroqReport(normalizeDiseaseReport('', diseaseName))
       }
       setStatus('done')
 
@@ -383,21 +513,27 @@ Keep it simple and practical for an Indian farmer.`,
   }
 
   const submitReport = async () => {
-    if (!lat || !lon || lat === 0) {
+    if (!user?.uid) {
+      setError('Please sign in before submitting a disease report.')
+      return
+    }
+    if (!hasValidLocation) {
       setError('Location required to submit report. Please enable location access.')
       return
     }
     setReporting(true)
     try {
-      const { collection, addDoc, serverTimestamp } = await import('firebase/firestore')
+      const { collection, addDoc, doc, getDoc, serverTimestamp } = await import('firebase/firestore')
       const { db, isFirebaseConfigured } = await import('@/lib/firebase')
       if (!isFirebaseConfigured || !db) {
         throw new Error('Firebase is not configured. Reports cannot be submitted yet.')
       }
+      const profileSnapshot = await getDoc(doc(db, 'users', user.uid))
+      const profile = profileSnapshot.data() || user.profile || {}
+      const farmerName = profile.displayName || user.displayName || user.email || 'Farmer'
       await addDoc(collection(db, 'diseaseReports'), {
-        farmerUid: user?.uid || 'anonymous',
-        farmerName: user?.displayName || 'Anonymous',
-        farmerPhone: user?.phoneNumber || '',
+        farmerUid: user.uid,
+        farmerName,
         cropType: cropType || 'Unknown',
         diseaseName: result?.diseaseName || 'Unknown',
         confidenceScore: result?.confidence || 0,
@@ -405,6 +541,9 @@ Keep it simple and practical for an Indian farmer.`,
         groqReport,
         lat,
         lon,
+        district: profile.district || '',
+        state: profile.state || '',
+        taluka: profile.taluka || '',
         status: 'new',
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -602,7 +741,7 @@ Keep it simple and practical for an Indian farmer.`,
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
                       <p className="font-semibold text-[#111827]">{result.diseaseName}</p>
-                      {result.confidence > 0 && (
+                      {Number.isFinite(result.confidence) && result.confidence > 0 && (
                         <Badge className={SEVERITY_COLORS[result.confidence > 70 ? 'high' : result.confidence > 40 ? 'medium' : 'low']}>
                           {result.confidence}% confidence
                         </Badge>
@@ -610,6 +749,22 @@ Keep it simple and practical for an Indian farmer.`,
                     </div>
                     {result.description && (
                       <p className="text-sm text-gray-600 leading-relaxed">{result.description}</p>
+                    )}
+                    {result.symptoms?.length > 0 && (
+                      <div className="text-sm text-gray-600">
+                        <p className="font-medium text-gray-700">Visible symptoms</p>
+                        <ul className="list-disc space-y-1 pl-5">
+                          {result.symptoms.map((symptom, index) => <li key={`symptom-${index}`}>{symptom}</li>)}
+                        </ul>
+                      </div>
+                    )}
+                    {result.actions?.length > 0 && (
+                      <div className="text-sm text-gray-600">
+                        <p className="font-medium text-gray-700">Immediate actions</p>
+                        <ul className="list-disc space-y-1 pl-5">
+                          {result.actions.map((action, index) => <li key={`action-${index}`}>{action}</li>)}
+                        </ul>
+                      </div>
                     )}
                   </div>
                 )}
@@ -662,7 +817,7 @@ Keep it simple and practical for an Indian farmer.`,
                 <AlertDialog>
                   <AlertDialogTrigger asChild>
                     <Button variant="outline" className="border-[#C62828] text-[#C62828] hover:bg-[#FFEBEE] w-full"
-                      disabled={locationLoading || !lat || lat === 0}>
+                      disabled={locationLoading || !hasValidLocation}>
                       <AlertTriangle className="w-4 h-4 mr-2" /> Alert Authorities
                       {locationLoading && ' (Getting location...)'}
                     </Button>
@@ -671,7 +826,7 @@ Keep it simple and practical for an Indian farmer.`,
                     <AlertDialogHeader>
                       <AlertDialogTitle>Submit Disease Report?</AlertDialogTitle>
                       <AlertDialogDescription>
-                        This will send a report to agricultural officers with your location, crop type, and disease details. Your contact info will be included if you are logged in.
+                        Your name, crop and disease details, GPS coordinates, and saved district/state will be stored in Firebase and visible to signed-in users on the Alerts page.
                       </AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>
@@ -683,6 +838,11 @@ Keep it simple and practical for an Indian farmer.`,
                     </AlertDialogFooter>
                   </AlertDialogContent>
                 </AlertDialog>
+              )}
+              {!reported && !locationLoading && !hasValidLocation && (
+                <p className="text-xs text-amber-700" role="status">
+                  {locationError || 'Enable location access to attach your position to this report.'}
+                </p>
               )}
 
               <Button variant="outline" onClick={downloadPDF}

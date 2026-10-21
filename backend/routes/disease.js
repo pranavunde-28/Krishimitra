@@ -66,7 +66,7 @@ router.post('/', upload.single('image'), async (req, res, next) => {
         content: [
           {
             type: 'text',
-            text: `Identify the plant disease in this image${sanitizedCropType ? ` (crop: ${sanitizedCropType})` : ''}. Provide: disease name, confidence percentage (0-100), visible symptoms, and immediate treatment steps.`,
+            text: `Assess this plant image${sanitizedCropType ? ` (crop: ${sanitizedCropType})` : ''}. Return exactly these four fields, each on its own line, using the labels shown and no extra sections:\nDisease name: ...\nConfidence: ...%\nVisible symptoms:\n- ...\nImmediate actions:\n- ...\nIf the image does not support a reliable identification, write "Unable to identify reliably" for the disease name, "Not available" for confidence, and say so in the symptoms. Do not invent a disease or confidence value. Keep symptoms and actions concise and practical.`,
           },
           {
             type: 'image_url',

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
-import { collection, addDoc, onSnapshot, updateDoc, doc, arrayUnion, arrayRemove, serverTimestamp, query, orderBy } from 'firebase/firestore'
-import { db } from '@/lib/firebase'
+import { collection, addDoc, onSnapshot, updateDoc, doc, arrayUnion, arrayRemove, serverTimestamp, query, orderBy, increment } from 'firebase/firestore'
+import { db, firebaseProjectId, isFirebaseConfigured } from '@/lib/firebase'
 import { useAuth } from '@/context/AuthContext'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -16,8 +16,15 @@ const CATEGORY_LABELS = { 'all': 'All', 'crop-tips': 'Crop Tips', 'disease-help'
 const CATEGORY_COLORS = { 'crop-tips': 'bg-green-100 text-green-700', 'disease-help': 'bg-red-100 text-red-700', 'market': 'bg-orange-100 text-orange-700', 'equipment': 'bg-blue-100 text-blue-700', 'schemes': 'bg-purple-100 text-purple-700' }
 
 function timeAgo(ts) {
-  if (!ts?.seconds) return ''
-  const diff = Math.floor((Date.now() / 1000) - ts.seconds)
+  const seconds = typeof ts?.seconds === 'number'
+    ? ts.seconds
+    : typeof ts?.toDate === 'function'
+      ? Math.floor(ts.toDate().getTime() / 1000)
+      : typeof ts === 'string' || ts instanceof Date
+        ? Math.floor(new Date(ts).getTime() / 1000)
+        : null
+  if (!seconds || !Number.isFinite(seconds)) return ''
+  const diff = Math.floor((Date.now() / 1000) - seconds)
   if (diff < 60) return `${diff}s ago`
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
   if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
@@ -80,7 +87,7 @@ function PostDetail({ post, onClose }) {
         authorName: user.displayName || user.email || 'Farmer',
         createdAt: serverTimestamp(),
       })
-      await updateDoc(doc(db, 'posts', post.id), { commentCount: (post.commentCount || 0) + 1 })
+      await updateDoc(doc(db, 'posts', post.id), { commentCount: increment(1) })
       setComment('')
     } finally {
       setSubmitting(false)
@@ -131,32 +138,56 @@ function PostDetail({ post, onClose }) {
 }
 
 export default function Community() {
-  const { user } = useAuth()
+  const { user, loading: authLoading } = useAuth()
   const [posts, setPosts] = useState([])
   const [loading, setLoading] = useState(true)
+  const [firestoreError, setFirestoreError] = useState('')
   const [category, setCategory] = useState('all')
   const [search, setSearch] = useState('')
   const [selected, setSelected] = useState(null)
   const [newPost, setNewPost] = useState({ title: '', body: '', category: 'crop-tips' })
   const [posting, setPosting] = useState(false)
   const [dialogOpen, setDialogOpen] = useState(false)
+  const isLoading = authLoading || (Boolean(user) && isFirebaseConfigured && loading)
 
   useEffect(() => {
-    const q = query(collection(db, 'posts'), orderBy('createdAt', 'desc'))
+    if (authLoading || !user?.uid || !isFirebaseConfigured || !db) return undefined
+    // Read the whole collection and sort client-side so legacy posts without
+    // createdAt are not silently excluded by Firestore's orderBy behavior.
+    const q = query(collection(db, 'posts'))
     const unsub = onSnapshot(q, snap => {
-      setPosts(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+      const documents = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+      documents.sort((a, b) => getPostTime(b) - getPostTime(a))
+      setPosts(documents)
+      setLoading(false)
+      setFirestoreError('')
+    }, error => {
+      console.error('Community Firestore subscription failed:', error.code, error.message)
+      setFirestoreError(`Could not load posts (${error.code || 'unknown'}). Check that Firestore rules are published for ${firebaseProjectId} and that you are signed in.`)
       setLoading(false)
     })
     return unsub
-  }, [])
+  }, [authLoading, user?.uid])
+
+  const pageError = !authLoading && !isFirebaseConfigured
+    ? 'Firebase is not configured. Create frontend/.env from frontend/.env.example, then restart the frontend.'
+    : !authLoading && !user
+      ? 'Sign in to load community messages.'
+      : firestoreError
 
   const handleUpvote = async (post) => {
     if (!user) return
     const hasUpvoted = post.upvotedBy?.includes(user.uid)
-    await updateDoc(doc(db, 'posts', post.id), {
-      upvotes: (post.upvotes || 0) + (hasUpvoted ? -1 : 1),
-      upvotedBy: hasUpvoted ? arrayRemove(user.uid) : arrayUnion(user.uid),
-    })
+    try {
+      await updateDoc(doc(db, 'posts', post.id), {
+        upvotes: (post.upvotes || 0) + (hasUpvoted ? -1 : 1),
+        upvotedBy: hasUpvoted ? arrayRemove(user.uid) : arrayUnion(user.uid),
+      })
+    } catch (error) {
+      setFirestoreError(error.code === 'permission-denied'
+        ? 'Firestore denied this update. Check that the deployed rules match this app.'
+        : 'Could not update the post. Check your connection and try again.')
+    }
   }
 
   const submitPost = async () => {
@@ -174,6 +205,9 @@ export default function Community() {
       })
       setNewPost({ title: '', body: '', category: 'crop-tips' })
       setDialogOpen(false)
+    } catch (error) {
+      console.error('Community post write failed:', error.code, error.message)
+      setFirestoreError(`Post was not saved (${error.code || 'unknown'}). Check Firestore rules for ${firebaseProjectId} and try again.`)
     } finally {
       setPosting(false)
     }
@@ -191,6 +225,7 @@ export default function Community() {
         <div>
           <h1 className="text-2xl font-bold text-[#1B4332]">Community Forum</h1>
           <p className="text-sm text-gray-500 mt-1">Discuss farming tips, prices, and more</p>
+          {firebaseProjectId && <p className="text-xs text-gray-400 mt-1">Connected Firebase project: {firebaseProjectId}</p>}
         </div>
         {user && (
           <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
@@ -220,6 +255,12 @@ export default function Community() {
         )}
       </div>
 
+      {pageError && (
+        <div className="mb-5 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800" role="alert">
+          {pageError}
+        </div>
+      )}
+
       {selected ? (
         <Card className="rounded-xl shadow-sm border border-gray-100">
           <CardContent className="p-5">
@@ -245,7 +286,7 @@ export default function Community() {
           </div>
 
           <div className="flex flex-col gap-3">
-            {loading ? (
+            {isLoading ? (
               Array(4).fill(0).map((_, i) => <Skeleton key={i} className="h-28 rounded-xl" />)
             ) : filtered.length === 0 ? (
               <Card className="rounded-xl shadow-sm border border-gray-100">
@@ -261,4 +302,12 @@ export default function Community() {
       )}
     </div>
   )
+}
+
+function getPostTime(post) {
+  const timestamp = post.createdAt || post.timestamp || post.date
+  if (typeof timestamp?.seconds === 'number') return timestamp.seconds
+  if (typeof timestamp?.toDate === 'function') return timestamp.toDate().getTime() / 1000
+  const parsed = timestamp ? new Date(timestamp).getTime() / 1000 : 0
+  return Number.isFinite(parsed) ? parsed : 0
 }

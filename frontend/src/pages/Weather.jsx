@@ -29,11 +29,14 @@ const getWeatherInfo = (code) => WMO_CODES[code] || { label: 'Unknown', icon: '�
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
 export default function Weather() {
-  const { lat, lon, loading: locLoading } = useLocation()
-  const { data, isLoading, isError } = useWeather(lat, lon)
+  const { lat, lon } = useLocation()
+  // Weather can use the local default if GPS permission is denied; disease
+  // reports still require verified coordinates in DiseaseDetect.
+  const weatherLat = lat ?? 19.0748
+  const weatherLon = lon ?? 74.748
+  const { data, isLoading, isError, error } = useWeather(weatherLat, weatherLon)
   const [calendar, setCalendar] = useState('')
   const [calLoading, setCalLoading] = useState(false)
-  const [userLanguage, setUserLanguage] = useState('en')
 
   useEffect(() => {
     if (!data?.daily) return
@@ -42,7 +45,6 @@ export default function Weather() {
       
       // Store user's current language
       const currentLang = document.documentElement.lang || 'en'
-      setUserLanguage(currentLang)
       
       // Switch to English before fetching
       if (currentLang !== 'en') {
@@ -279,7 +281,7 @@ Keep each suggestion to one short sentence.` }],
     doc.save(`KrishiMitra_Farming_Calendar_${new Date().toISOString().split('T')[0]}.pdf`)
   }
 
-  if (locLoading || isLoading) return (
+  if (isLoading) return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-20 pb-16">
       <div className="mt-8 space-y-4">
         <Skeleton className="h-8 w-48" />
@@ -293,7 +295,9 @@ Keep each suggestion to one short sentence.` }],
 
   if (isError) return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-20 pb-16">
-      <div className="mt-8 text-center text-gray-400">Failed to load weather data.</div>
+      <div className="mt-8 text-center text-gray-500">
+        Failed to load weather data: {error?.message || 'Check that the backend is running and VITE_BACKEND_URL points to it.'}
+      </div>
     </div>
   )
 
@@ -301,7 +305,9 @@ Keep each suggestion to one short sentence.` }],
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-20 pb-16">
       <div className="mt-8 mb-6">
         <h1 className="text-2xl font-bold text-[#1B4332]">Weather & Farm Calendar</h1>
-        <p className="text-sm text-gray-500 mt-1">Hyperlocal forecast for your location · Open-Meteo</p>
+        <p className="text-sm text-gray-500 mt-1">
+          {lat === null || lon === null ? 'Local forecast for Kopargaon (location permission unavailable)' : 'Hyperlocal forecast for your location'} · Open-Meteo
+        </p>
       </div>
 
       {/* Heavy rain alert */}

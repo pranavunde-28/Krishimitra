@@ -31,6 +31,7 @@ farming information easier to access and understand.
 -   [Getting Started](#getting-started)
 -   [Environment Variables](#environment-variables)
 -   [Running Locally](#running-locally)
+-   [Hosting](#hosting)
 -   [Security Notes](#security-notes)
 -   [Contributing](#contributing)
 -   [Future Improvements](#future-improvements)
@@ -321,6 +322,14 @@ A typical local workflow is:
 If a feature does not work, check the browser console, backend terminal,
 environment variable names, API quotas, Firebase configuration, and
 network requests.
+
+## Hosting
+
+Deployment files and step-by-step instructions are included for hosting
+the frontend on Netlify and the API on Render. See
+[DEPLOYMENT.md](DEPLOYMENT.md) before deploying, especially for required
+frontend environment variables, backend CORS configuration, and Firebase
+domain setup.
 
 ## Security Notes
 

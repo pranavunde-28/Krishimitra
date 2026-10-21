@@ -1,16 +1,15 @@
 import { useState, useEffect } from 'react'
 
 export function useLocation() {
-  const [location, setLocation] = useState({ lat: null, lon: null, error: null, loading: true })
+  const [location, setLocation] = useState(() => typeof navigator !== 'undefined' && navigator.geolocation
+    ? { lat: null, lon: null, error: null, loading: true }
+    : { lat: null, lon: null, error: 'Geolocation not supported', loading: false })
 
   useEffect(() => {
-    if (!navigator.geolocation) {
-      setLocation({ lat: null, lon: null, error: 'Geolocation not supported', loading: false })
-      return
-    }
+    if (typeof navigator === 'undefined' || !navigator.geolocation) return
     navigator.geolocation.getCurrentPosition(
       (pos) => setLocation({ lat: pos.coords.latitude, lon: pos.coords.longitude, error: null, loading: false }),
-      () => setLocation({ lat: 19.0748, lon: 74.7480, error: 'Location denied — using Kopargaon default', loading: false })
+        () => setLocation({ lat: null, lon: null, error: 'Location permission is required to share a report location', loading: false })
     )
   }, [])
 

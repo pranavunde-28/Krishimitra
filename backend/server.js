@@ -16,7 +16,7 @@ app.use(helmet())
 const ALLOWED_ORIGINS = [
   'http://localhost:5173',
   'http://localhost:3000',
-  process.env.FRONTEND_URL,
+  ...(process.env.FRONTEND_URL || '').split(',').map(origin => origin.trim()),
 ].filter(Boolean)
 
 app.use(cors({
@@ -73,9 +73,11 @@ app.use(errorHandler)
 
 // ── Start server ──────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 5000
-app.listen(PORT, async () => {
+
+  app.listen(PORT, '0.0.0.0', () => {
   console.log(`[KrishiMitra] Backend running on port ${PORT}`)
   console.log(`[KrishiMitra] Allowed origins: ${ALLOWED_ORIGINS.join(', ')}`)
+})
 
   if (!isCacheFresh()) {
     console.log('[Cache] Stale — refreshing price data...')
