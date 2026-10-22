@@ -99,4 +99,4 @@ const PORT = process.env.PORT || 5000
   }, msUntilMidnight)
 
   console.log(`[Cache] Next refresh in ${(msUntilMidnight / 1000 / 60).toFixed(0)} minutes`)
-})
+
